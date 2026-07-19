@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.build-tools/
+build/
+staging-build/
+staging-dist/
+release/
+
+*.out
+*.err
+*.log
+*backup*.json
+
+dist/*
+!dist/XZWallpaperBypass.exe
