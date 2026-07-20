@@ -47,9 +47,9 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops\Desktops
 
 当子键包含 `Wallpaper` 时，切换到该桌面会把这张单图应用到壁纸系统。对于左右屏不同图片的配置，这会暂时把同一张图应用到两屏。
 
-2.5.1 在首次修改前备份每个桌面是否存在 `Wallpaper`、原路径和注册表类型，然后删除这些值。没有单桌面覆盖时，所有虚拟桌面继承当前 `IDesktopWallpaper` 的逐显示器路径。
+2.5.2 在首次修改前备份每个桌面是否存在 `Wallpaper`、原路径和注册表类型，然后删除这些值。没有单桌面覆盖时，所有虚拟桌面优先继承当前 `IDesktopWallpaper` 的逐显示器路径。
 
-监视器每两秒检查一次新建或重新写入的覆盖，但不会因为普通虚拟桌面切换而调用 WinDynamicDesktop `/refresh`，从而避免不必要的重绘。
+Windows Shell 还会在内存中保留各虚拟桌面的壁纸状态；WinDynamicDesktop 定时更新通常只更新当前桌面。因此，仅删除注册表值仍可能在稍后的切换中恢复旧图。2.5.2 每两秒检查新建或重新写入的覆盖，并以 50ms 间隔检测虚拟桌面切换；检测后立即调用 WinDynamicDesktop `/refresh`。
 
 ## 实测切换时序
 
@@ -61,18 +61,20 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops\Desktops
 | 约 650 ms | Big Sur | Big Sur |
 | 约 962 ms | Big Sur | Catalina |
 
-清除虚拟桌面 `Wallpaper` 覆盖后，用相同方法切换并切回，两个显示器的路径全程没有发生变化。
+单独清除虚拟桌面 `Wallpaper` 覆盖后，短期测试中两个显示器路径没有变化；但 WinDynamicDesktop 在当前桌面进入新的时段图片后，其他桌面的 Shell 内存缓存仍会过期。
+
+2.5.2 在相同双屏配置下再次测试：切换动画完成后约 527ms 读到旧缓存，两屏在约 556ms 都成为旧 `Big_Sur_2`，约 585ms 恢复为当前 `Big_Sur_6` / `Catalina_7`。错误路径实际持续约 58ms；切回原桌面时没有发生路径变化。
 
 ## 常驻监视器
 
-`watch --interval 1.0 --desktop-mode xz` 执行以下工作：
+`watch --interval 0.05 --desktop-mode xz` 执行以下工作：
 
-- 每秒低频检查小智进程；
+- 每 50ms 检查虚拟桌面标记；小智进程枚举仍限制为每秒一次；
 - 小智重启或 DLL 重新加载后再次执行全部校验和内存补丁；
 - 每 30 秒重新验证补丁状态；
 - 每两秒确保虚拟桌面继续继承逐显示器配置；
 - WinDynamicDesktop 启动或主题设置文件变化时请求刷新；
-- 普通虚拟桌面切换不触发刷新。
+- 普通虚拟桌面切换触发 WinDynamicDesktop `/refresh`，但没有额外的固定等待。
 
 ## 桌面窗口策略
 

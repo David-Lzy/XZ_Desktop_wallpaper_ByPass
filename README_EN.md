@@ -4,9 +4,9 @@
 
 Runtime wallpaper compatibility tool for **XZ Desktop 4.1.3.8 x64** on Windows 11.
 
-Version 2.5.1 blocks XZ Desktop's wallpaper compatibility layer in memory while keeping the complete native `XZDesktopWnd` visible. Desktop groups, resizing, selection and dragging therefore remain managed by the current XZ Desktop release.
+Version 2.5.2 blocks XZ Desktop's wallpaper compatibility layer in memory while keeping the complete native `XZDesktopWnd` visible. Desktop groups, resizing, selection and dragging therefore remain managed by the current XZ Desktop release.
 
-It also removes the single-picture overrides stored for individual Windows virtual desktops. Every virtual desktop then inherits the current per-monitor `IDesktopWallpaper` configuration, so two physical monitors may keep different WinDynamicDesktop themes without flashing the first monitor's image during a virtual-desktop switch.
+It also removes the single-picture overrides stored for individual Windows virtual desktops. Because Windows can still restore an in-memory wallpaper cache when switching desktops, version 2.5.2 detects switches every 50 ms and immediately requests a WinDynamicDesktop refresh. In the validated dual-monitor setup, the stale cache remained visible for about 58 ms instead of persisting until a manual refresh.
 
 ## Supported target
 

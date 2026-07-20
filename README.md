@@ -4,7 +4,7 @@
 
 适用于 **小智桌面 4.1.3.8 x64** 的运行时壁纸兼容工具。它阻止小智的壁纸兼容层覆盖 Windows 壁纸，同时保留新版小智原生的桌面分区、图标、宽度调整、框选和拖拽体验。
 
-当前版本：**2.5.1**
+当前版本：**2.5.2**
 
 仓库内预编译程序的 SHA-256 见 [SHA256SUMS.txt](SHA256SUMS.txt)。
 
@@ -17,10 +17,11 @@
 - Windows 虚拟桌面保存的是单张 `Wallpaper` 覆盖；在双屏使用不同壁纸时，切换虚拟桌面会先把其中一张图短暂复制到两屏。
 - 旧的裁剪/Bypass 方案会干扰新版小智已经优化过的拖拽体验。
 
-2.5.1 的默认模式只做两件事：
+2.5.2 的默认模式做三件事：
 
 1. 在内存中阻止小智反向改写系统壁纸。
 2. 清除各虚拟桌面的单图覆盖，使所有虚拟桌面继承 Windows 当前的逐显示器壁纸配置。
+3. 每 50ms 检测虚拟桌面切换，并立即请求 WinDynamicDesktop 刷新当前桌面。
 
 因此，两个物理显示器仍可分别使用不同主题，而所有虚拟桌面共享这套双屏配置。
 
@@ -58,7 +59,7 @@ XZWallpaperBypass-WallpaperOnly
 任务以隐藏窗口运行：
 
 ```text
-XZWallpaperBypass.exe watch --interval 1.0 --desktop-mode xz
+XZWallpaperBypass.exe watch --interval 0.05 --desktop-mode xz
 ```
 
 `xz` 模式保持整个 `XZDesktopWnd` 可见且不设置裁剪区域，所以小智分区和新版原生拖拽都由小智自己管理。
@@ -74,7 +75,7 @@ Get-ScheduledTaskInfo -TaskName 'XZWallpaperBypass-WallpaperOnly'
 
 正常状态应显示：
 
-- 工具版本 `2.5.1`；
+- 工具版本 `2.5.2`；
 - 进程状态 `patched`；
 - 两个入口均为 `patched`；
 - Desktop layer 为 `visible_xiaozhi`；
@@ -135,7 +136,9 @@ dist\XZWallpaperBypass.exe
 
 ### WinDynamicDesktop 左右屏主题不同
 
-这是受支持的用法。不要在 Windows“个性化”中为某个虚拟桌面单独设置背景，否则 Windows 会重新创建单图覆盖；常驻监视器会再次清除该覆盖。
+这是受支持的用法，但 Windows 11 不能为一个虚拟桌面持久保存两块显示器的不同图片。切换时 Shell 可能短暂恢复该桌面的旧缓存；2.5.2 会在检测到切换后立即调用 WinDynamicDesktop `/refresh`。实测错误缓存约持续 58ms，而不是一直保留到手动刷新。
+
+不要在 Windows“个性化”中为某个虚拟桌面单独设置背景，否则 Windows 会重新创建单图覆盖；常驻监视器会再次清除该覆盖。
 
 ### 杀毒软件警告
 

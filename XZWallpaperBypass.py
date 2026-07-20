@@ -25,7 +25,7 @@ import uuid
 import winreg
 
 
-TOOL_VERSION = "2.5.1"
+TOOL_VERSION = "2.5.2"
 TARGET_EXE = "XZDesktop64.exe"
 WINDYNAMIC_PREFIX = "windynamicdesktop"
 VIRTUAL_DESKTOP_ROOT = (
@@ -1788,10 +1788,7 @@ def watch(
             if new_settings_marker != settings_marker:
                 refresh_reasons.append("theme_settings_changed")
             if new_desktop_marker != desktop_marker:
-                # Per-desktop Wallpaper values are intentionally absent, so a
-                # desktop switch inherits the already-correct IDesktopWallpaper
-                # paths and does not need a repainting /refresh call.
-                desktop_marker = new_desktop_marker
+                refresh_reasons.append("virtual_desktop_changed")
 
             inheritance_state: dict | None = None
             inheritance_now = time.monotonic()
@@ -1985,8 +1982,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument(
         "--interval",
         type=float,
-        default=0.1,
-        help="poll interval in seconds (default: 0.1)",
+        default=0.05,
+        help="poll interval in seconds (default: 0.05)",
     )
     watch_parser.add_argument(
         "--desktop-mode",

@@ -20,7 +20,7 @@ if ($existing) {
 
 $process = Start-Process `
     -FilePath $executable `
-    -ArgumentList @('watch', '--interval', '1.0', '--desktop-mode', 'xz') `
+    -ArgumentList @('watch', '--interval', '0.05', '--desktop-mode', 'xz') `
     -WorkingDirectory $workingDirectory `
     -WindowStyle Hidden `
     -PassThru
