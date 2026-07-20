@@ -25,7 +25,8 @@ $process = Start-Process `
         'watch',
         '--interval', '0.25',
         '--desktop-mode', 'xz',
-        '--wallpaper-refresh', 'external'
+        '--wallpaper-refresh', 'external',
+        '--startup-delay', '10'
     ) `
     -WorkingDirectory $workingDirectory `
     -WindowStyle Hidden `

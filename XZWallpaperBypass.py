@@ -25,7 +25,7 @@ import uuid
 import winreg
 
 
-TOOL_VERSION = "2.6.0"
+TOOL_VERSION = "2.6.2"
 TARGET_EXE = "XZDesktop64.exe"
 WINDYNAMIC_PREFIX = "windynamicdesktop"
 VIRTUAL_DESKTOP_ROOT = (
@@ -37,6 +37,8 @@ VIRTUAL_DESKTOP_ENFORCE_SECONDS = 2.0
 REFRESH_DEBOUNCE_SECONDS = 0.12
 REFRESH_COOLDOWN_SECONDS = 2.0
 REFRESH_RETRY_SECONDS = 5.0
+EXTERNAL_LAYER_REFRESH_DEBOUNCE_SECONDS = 0.20
+STARTUP_SETTLE_SECONDS = 10.0
 
 TH32CS_SNAPPROCESS = 0x00000002
 TH32CS_SNAPMODULE = 0x00000008
@@ -46,6 +48,7 @@ INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 PROCESS_VM_OPERATION = 0x0008
 PROCESS_VM_READ = 0x0010
 PROCESS_VM_WRITE = 0x0020
+PROCESS_CREATE_THREAD = 0x0002
 PROCESS_QUERY_INFORMATION = 0x0400
 PAGE_EXECUTE_READWRITE = 0x40
 PAGE_READWRITE = 0x04
@@ -53,6 +56,9 @@ MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
 MEM_RELEASE = 0x8000
 ERROR_NO_MORE_FILES = 18
+WAIT_OBJECT_0 = 0x00000000
+WAIT_TIMEOUT = 0x00000102
+REPAINT_THREAD_TIMEOUT_MS = 20000
 
 MAX_PATH = 260
 MAX_MODULE_NAME32 = 255
@@ -182,9 +188,23 @@ IMPL_PROFILE = ModuleProfile(
 # needed for the supported 4.1.3.8 workflow.
 PROFILES = (CORE_PROFILE,)
 PER_MONITOR_SYNC_ENABLED = False
-REPAINT_GATE_OFFSET = 0xD61
-WM_SETTINGCHANGE = 0x001A
-SPI_SETDESKWALLPAPER = 0x0014
+
+# XiaoZhi 4.1.3.8 background-control layout.  Its own SetWallpaper routine
+# collapses a 7680x2160 WDD span into a 3840x2160 cache, so the watcher instead
+# gives the verified DuiLib background control the already composed span image.
+# Complete DLL hashes and remote entry bytes are checked before any call.
+IMPL_4138_SHA256 = (
+    "23E4D014D79639D5C600D16F93017562421ED537054D7EDB88A1112A9925DB12"
+)
+DUI_4138_SHA256 = (
+    "F03187A54BB18CC71369B4A6EB36BCFD6BCD5BA70D7315FB92AA428B64E6515E"
+)
+DUI_SET_BK_IMAGE_RVA = 0x6DA70
+DUI_SET_BK_IMAGE_ENTRY = bytes.fromhex(
+    "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 0F"
+)
+XZ_BACKGROUND_CONTROL_OFFSET = 0xCB0
+REMOTE_BACKGROUND_BLOCK_SIZE = 0x1000
 
 # XiaoZhi's image-instruction helper receives a structure containing the image
 # path and dimensions.  Two tiny wrappers replace that first argument for the
@@ -290,6 +310,20 @@ kernel32.VirtualFreeEx.argtypes = [
 kernel32.VirtualFreeEx.restype = wintypes.BOOL
 kernel32.FlushInstructionCache.argtypes = [wintypes.HANDLE, wintypes.LPCVOID, ctypes.c_size_t]
 kernel32.FlushInstructionCache.restype = wintypes.BOOL
+kernel32.CreateRemoteThread.argtypes = [
+    wintypes.HANDLE,
+    wintypes.LPVOID,
+    ctypes.c_size_t,
+    wintypes.LPVOID,
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.CreateRemoteThread.restype = wintypes.HANDLE
+kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.WaitForSingleObject.restype = wintypes.DWORD
+kernel32.GetExitCodeThread.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+kernel32.GetExitCodeThread.restype = wintypes.BOOL
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -449,7 +483,8 @@ def validate_target(module: ModuleInfo, profile: ModuleProfile) -> None:
 
 def open_process(pid: int) -> int:
     access = (
-        PROCESS_QUERY_INFORMATION
+        PROCESS_CREATE_THREAD
+        | PROCESS_QUERY_INFORMATION
         | PROCESS_VM_OPERATION
         | PROCESS_VM_READ
         | PROCESS_VM_WRITE
@@ -1220,26 +1255,139 @@ def trigger_repaint(process: int, pid: int) -> str:
     window = find_xz_window(pid)
     if window is None:
         return "window_not_ready"
-    hwnd, this_ptr = window
-    gate_address = this_ptr + REPAINT_GATE_OFFSET
-    original_gate = read_memory(process, gate_address, 1)
+    _hwnd, this_ptr = window
+    impl_module = find_module(pid, IMPL_PROFILE.name)
+    dui_module = find_module(pid, "DuiLib64.dll")
+    if impl_module is None or dui_module is None:
+        return "module_not_ready"
+    actual_impl_hash = sha256_file(impl_module.path)
+    if actual_impl_hash != IMPL_4138_SHA256:
+        raise BypassError(
+            f"unsupported {IMPL_PROFILE.name} background layout: "
+            f"sha256={actual_impl_hash}; "
+            f"expected={IMPL_4138_SHA256}. No thread was created."
+        )
+    actual_dui_hash = sha256_file(dui_module.path)
+    if actual_dui_hash != DUI_4138_SHA256:
+        raise BypassError(
+            f"unsupported DuiLib64.dll background function: sha256={actual_dui_hash}; "
+            f"expected={DUI_4138_SHA256}. No thread was created."
+        )
+    entry_address = dui_module.base + DUI_SET_BK_IMAGE_RVA
+    actual_entry = read_memory(process, entry_address, len(DUI_SET_BK_IMAGE_ENTRY))
+    if actual_entry != DUI_SET_BK_IMAGE_ENTRY:
+        raise BypassError(
+            "DuiLib64 SetBkImage entry bytes changed; no thread was created: "
+            f"{actual_entry.hex(' ').upper()}"
+        )
+
+    state_path = external_wallpaper_state_path()
     try:
-        write_data_memory(process, gate_address, b"\x00")
-        section = ctypes.create_unicode_buffer("Control Panel\\Desktop")
-        message_result = ctypes.c_size_t()
-        if not user32.SendMessageTimeoutW(
-            hwnd,
-            WM_SETTINGCHANGE,
-            SPI_SETDESKWALLPAPER,
-            ctypes.cast(section, ctypes.c_void_p).value,
-            0x0002,  # SMTO_ABORTIFHUNG
-            10000,
-            ctypes.byref(message_result),
-        ):
-            raise win_error("SendMessageTimeoutW(WM_SETTINGCHANGE)")
+        state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+        image_path = Path(state["output"])
+    except (AttributeError, OSError, ValueError, KeyError, TypeError) as exc:
+        raise BypassError(f"cannot read WDD span state {state_path}: {exc}") from exc
+    if not image_path.is_file():
+        raise BypassError(f"WDD span image is unavailable: {image_path}")
+
+    control = struct.unpack(
+        "<Q", read_memory(process, this_ptr + XZ_BACKGROUND_CONTROL_OFFSET, 8)
+    )[0]
+    if not control:
+        return "background_control_not_ready"
+    control_vtable = struct.unpack("<Q", read_memory(process, control, 8))[0]
+    if not (
+        impl_module.base
+        <= control_vtable
+        < impl_module.base + impl_module.size
+    ):
+        raise BypassError(
+            f"unexpected XiaoZhi background control vtable: 0x{control_vtable:X}"
+        )
+
+    image_text = str(image_path)
+    encoded_path = image_text.encode("utf-16-le") + b"\x00\x00"
+    if len(encoded_path) > 0xD00:
+        raise BypassError(f"WDD span image path is too long: {image_path}")
+    allocation_value = kernel32.VirtualAllocEx(
+        process,
+        None,
+        REMOTE_BACKGROUND_BLOCK_SIZE,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE,
+    )
+    if not allocation_value:
+        raise win_error("VirtualAllocEx(SetBkImage)")
+    allocation = int(ctypes.cast(allocation_value, ctypes.c_void_p).value)
+    empty_view_address = allocation + 0x180
+    image_view_address = allocation + 0x190
+    path_address = allocation + 0x200
+    # Clear first so a virtual-desktop transition reloads even when WDD keeps
+    # the same cache filename.  Both calls finish before the window can repaint.
+    remote_code = (
+        b"\x48\x83\xEC\x28"
+        + b"\x48\xB9" + struct.pack("<Q", control)
+        + b"\x48\xBA" + struct.pack("<Q", empty_view_address)
+        + b"\x48\xB8" + struct.pack("<Q", entry_address)
+        + b"\xFF\xD0"
+        + b"\x48\xB9" + struct.pack("<Q", control)
+        + b"\x48\xBA" + struct.pack("<Q", image_view_address)
+        + b"\x48\xB8" + struct.pack("<Q", entry_address)
+        + b"\xFF\xD0"
+        + b"\x48\x83\xC4\x28\x31\xC0\xC3"
+    )
+    write_data_memory(process, allocation, remote_code)
+    write_data_memory(process, empty_view_address, b"\x00" * 16)
+    write_data_memory(
+        process,
+        image_view_address,
+        struct.pack("<QQ", path_address, len(image_text)),
+    )
+    write_data_memory(process, path_address, encoded_path)
+
+    thread_id = wintypes.DWORD()
+    thread = kernel32.CreateRemoteThread(
+        process,
+        None,
+        0,
+        ctypes.c_void_p(allocation),
+        None,
+        0,
+        ctypes.byref(thread_id),
+    )
+    if not thread:
+        kernel32.VirtualFreeEx(process, allocation, 0, MEM_RELEASE)
+        raise win_error("CreateRemoteThread(DuiLib64!SetBkImage)")
+    completed = False
+    try:
+        wait_result = kernel32.WaitForSingleObject(thread, REPAINT_THREAD_TIMEOUT_MS)
+        if wait_result == WAIT_TIMEOUT:
+            raise BypassError(
+                "DuiLib64!SetBkImage did not finish within "
+                f"{REPAINT_THREAD_TIMEOUT_MS / 1000:g} seconds"
+            )
+        if wait_result != WAIT_OBJECT_0:
+            raise win_error("WaitForSingleObject(SetBkImage thread)")
+        completed = True
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeThread(thread, ctypes.byref(exit_code)):
+            raise win_error("GetExitCodeThread(SetBkImage thread)")
     finally:
-        write_data_memory(process, gate_address, original_gate)
-    return f"repainted_on_ui_thread_gate_restored_{original_gate.hex().upper()}"
+        close_handle(thread)
+        if completed:
+            kernel32.VirtualFreeEx(process, allocation, 0, MEM_RELEASE)
+    return (
+        f"xz_setbkimage_thread_{thread_id.value}_"
+        f"exit_0x{exit_code.value:08X}"
+    )
+
+
+def repaint_live_pid(pid: int) -> str:
+    process = open_process(pid)
+    try:
+        return trigger_repaint(process, pid)
+    finally:
+        close_handle(process)
 
 
 def inspect_pid(pid: int) -> dict:
@@ -1248,7 +1396,7 @@ def inspect_pid(pid: int) -> dict:
     module_results = []
     all_states: list[str] = []
     per_monitor: dict = {
-        "state": "unknown" if PER_MONITOR_SYNC_ENABLED else "not_required_4.1.3.8"
+        "state": "unknown" if PER_MONITOR_SYNC_ENABLED else "disabled_4.1.3.8"
     }
     try:
         for profile, module in modules:
@@ -1310,7 +1458,7 @@ def change_pid(pid: int, desired: str) -> dict:
     repaint = None
     wallpaper_sync = None
     try:
-        if impl_module is not None:
+        if PER_MONITOR_SYNC_ENABLED and impl_module is not None:
             path_state, _allocation = per_monitor_state(process, impl_module)
             if path_state == "mismatch":
                 raise BypassError(
@@ -1329,7 +1477,11 @@ def change_pid(pid: int, desired: str) -> dict:
                     )
                 snapshots.append((profile, module, site, current))
 
-        if desired == "original" and impl_module is not None:
+        if (
+            desired == "original"
+            and PER_MONITOR_SYNC_ENABLED
+            and impl_module is not None
+        ):
             restore_per_monitor_paths(process, impl_module)
 
         ordered = snapshots if desired == "patched" else list(reversed(snapshots))
@@ -1348,7 +1500,11 @@ def change_pid(pid: int, desired: str) -> dict:
             if site_state(current, site) != desired:
                 raise BypassError(f"pid={pid} {site.name}: read-back verification failed")
 
-        if desired == "patched" and impl_module is not None:
+        if (
+            desired == "patched"
+            and PER_MONITOR_SYNC_ENABLED
+            and impl_module is not None
+        ):
             wallpaper_sync = sync_per_monitor_paths(process, pid, impl_module)
             repaint = wallpaper_sync["repaint"]
 
@@ -1521,6 +1677,13 @@ def file_marker(path: Path | None) -> tuple[int, int] | None:
         return stat.st_mtime_ns, stat.st_size
     except OSError:
         return None
+
+
+def external_wallpaper_state_path() -> Path | None:
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if not local_appdata:
+        return None
+    return Path(local_appdata) / "XZWallpaperBypass" / "WDD-Span" / "state.json"
 
 
 def read_area_log_delta(
@@ -1735,8 +1898,10 @@ def watch(
     as_json: bool,
     desktop_mode: str,
     wallpaper_refresh: str,
+    startup_delay: float,
 ) -> int:
     manage_wallpaper = wallpaper_refresh == "windynamic"
+    external_state = external_wallpaper_state_path() if not manage_wallpaper else None
     windynamic = find_windynamicdesktop_executable() if manage_wallpaper else None
     settings = windynamic_settings_path(windynamic) if manage_wallpaper else None
     if as_json:
@@ -1748,6 +1913,7 @@ def watch(
                     "interval": interval,
                     "desktop_mode": desktop_mode,
                     "wallpaper_refresh": wallpaper_refresh,
+                    "startup_delay": startup_delay,
                     "windynamicdesktop": str(windynamic) if windynamic else None,
                 }
             )
@@ -1758,11 +1924,18 @@ def watch(
             f"Desktop mode: {desktop_mode}. Installed files are never modified."
         )
         if not manage_wallpaper:
-            print("Wallpaper refresh: external WDD script (watcher will not call /refresh).")
+            print(
+                "Wallpaper refresh: external WDD script; watcher refreshes the "
+                "desktop window after the WDD state file changes."
+            )
         elif windynamic:
             print(f"WinDynamicDesktop: {windynamic}")
         else:
             print("WinDynamicDesktop is not running; current Windows paths will still be mirrored.")
+        print(
+            f"Startup safety: wait {startup_delay:.1f}s after XZDesktopWnd is ready "
+            "before applying the memory patch."
+        )
     last_report: dict[int, str] = {}
     synced_signatures: dict[int, tuple] = {}
     status_cache: dict[int, dict] = {}
@@ -1771,6 +1944,8 @@ def watch(
     area_offsets: dict[int, int] = {}
     area_carries: dict[int, bytes] = {}
     next_verification: dict[int, float] = {}
+    external_refreshed_generations: dict[int, int] = {}
+    desktop_ready_since: dict[int, float] = {}
     drag_active_until = 0.0
     live_pids_cache: set[int] = set()
     next_process_scan = 0.0
@@ -1778,6 +1953,12 @@ def watch(
     settings_marker = file_mtime(settings)
     desktop_marker = current_virtual_desktop_id()
     watch_started = time.monotonic()
+    external_state_marker: tuple[int, int] | None = None
+    # Generation one guarantees one verified XiaoZhi-side redraw after a new
+    # process is patched, even when WDD's state file predates this watcher.
+    external_refresh_generation = 1 if not manage_wallpaper else 0
+    external_refresh_due = watch_started
+    external_refresh_reason = "startup"
     pending_refresh_reasons: set[str] = {"startup"} if manage_wallpaper else set()
     refresh_due = watch_started + 1.0
     last_refresh_request = watch_started - REFRESH_COOLDOWN_SECONDS
@@ -1788,6 +1969,16 @@ def watch(
         while True:
             loop_clock = time.monotonic()
             refresh_happened = False
+            if external_state is not None:
+                new_external_marker = file_marker(external_state)
+                if new_external_marker != external_state_marker:
+                    external_state_marker = new_external_marker
+                    if new_external_marker is not None:
+                        external_refresh_generation += 1
+                        external_refresh_reason = "external_wdd_state"
+                        external_refresh_due = (
+                            loop_clock + EXTERNAL_LAYER_REFRESH_DEBOUNCE_SECONDS
+                        )
             if (
                 manage_wallpaper
                 and
@@ -1806,9 +1997,7 @@ def watch(
                     )
 
             new_settings_marker = file_mtime(settings) if manage_wallpaper else settings_marker
-            new_desktop_marker = (
-                current_virtual_desktop_id() if manage_wallpaper else desktop_marker
-            )
+            new_desktop_marker = current_virtual_desktop_id()
             event_now = time.monotonic()
             if manage_wallpaper and new_settings_marker != settings_marker:
                 pending_refresh_reasons.add("theme_settings_changed")
@@ -1823,6 +2012,17 @@ def watch(
                 refresh_due = max(
                     event_now + REFRESH_DEBOUNCE_SECONDS,
                     last_refresh_request + REFRESH_COOLDOWN_SECONDS,
+                )
+            elif (
+                not manage_wallpaper
+                and new_desktop_marker is not None
+                and new_desktop_marker != desktop_marker
+            ):
+                desktop_marker = new_desktop_marker
+                external_refresh_generation += 1
+                external_refresh_reason = "virtual_desktop_changed"
+                external_refresh_due = (
+                    event_now + EXTERNAL_LAYER_REFRESH_DEBOUNCE_SECONDS
                 )
 
             inheritance_state: dict | None = None
@@ -1924,6 +2124,8 @@ def watch(
                 area_offsets.pop(stale_pid, None)
                 area_carries.pop(stale_pid, None)
                 next_verification.pop(stale_pid, None)
+                external_refreshed_generations.pop(stale_pid, None)
+                desktop_ready_since.pop(stale_pid, None)
             for pid in sorted(live_pids):
                 try:
                     now = time.monotonic()
@@ -1935,6 +2137,36 @@ def watch(
                     if full_check:
                         status = inspect_pid(pid)
                         if status["state"] != "patched":
+                            layer_state = status.get("desktop_layer", {}).get("state")
+                            if layer_state == "window_not_ready":
+                                desktop_ready_since.pop(pid, None)
+                                wait_reason = "XZDesktopWnd is not ready"
+                            else:
+                                ready_since = desktop_ready_since.setdefault(pid, now)
+                                remaining = startup_delay - (now - ready_since)
+                                wait_reason = (
+                                    f"startup settle delay ({remaining:.1f}s remaining)"
+                                    if remaining > 0
+                                    else None
+                                )
+                            if wait_reason is not None:
+                                marker = f"startup_wait:{layer_state}"
+                                if last_report.get(pid) != marker:
+                                    if as_json:
+                                        print(
+                                            json.dumps(
+                                                {
+                                                    "pid": pid,
+                                                    "state": "waiting",
+                                                    "reason": wait_reason,
+                                                }
+                                            )
+                                        )
+                                    else:
+                                        print(f"PID {pid}: waiting: {wait_reason}")
+                                    last_report[pid] = marker
+                                time.sleep(interval)
+                                continue
                             status = change_pid(pid, "patched")
                         next_verification[pid] = now + 30.0
                     else:
@@ -1955,6 +2187,22 @@ def watch(
                             synced_signatures[pid] = signature
                     elif monitor_error is not None:
                         raise monitor_error
+
+                    external_repaint_refresh = (
+                        status["state"] == "patched"
+                        and external_refresh_generation > 0
+                        and external_refreshed_generations.get(pid, 0)
+                        != external_refresh_generation
+                        and time.monotonic() >= external_refresh_due
+                    )
+                    if external_repaint_refresh:
+                        repaint_state = repaint_live_pid(pid)
+                        status["repaint"] = repaint_state
+                        if repaint_state not in ("window_not_ready", "module_not_ready"):
+                            external_refreshed_generations[pid] = (
+                                external_refresh_generation
+                            )
+                            status["desktop_layer_refresh"] = external_refresh_reason
 
                     source = area_sources.get(pid)
                     layer_refresh = full_check or refresh_happened
@@ -2068,6 +2316,15 @@ def build_parser() -> argparse.ArgumentParser:
             "wallpaper state to an installed WDD script"
         ),
     )
+    watch_parser.add_argument(
+        "--startup-delay",
+        type=float,
+        default=STARTUP_SETTLE_SECONDS,
+        help=(
+            "seconds to wait after XZDesktopWnd is ready before patching "
+            f"(default: {STARTUP_SETTLE_SECONDS:g})"
+        ),
+    )
     return parser
 
 
@@ -2088,12 +2345,15 @@ def main() -> int:
         if args.command == "watch":
             if args.interval < 0.05:
                 raise BypassError("--interval must be at least 0.05 seconds")
+            if args.startup_delay < 0:
+                raise BypassError("--startup-delay cannot be negative")
             return watch(
                 args.interval,
                 args.pid,
                 args.json,
                 args.desktop_mode,
                 args.wallpaper_refresh,
+                args.startup_delay,
             )
         return process_once(
             args.command,

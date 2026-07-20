@@ -2,12 +2,14 @@
 
 ## 组件关系
 
-2.6.0 把“阻止小智写壁纸”和“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
+2.6.2 把“阻止小智写壁纸”和“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
 
 1. `XZWallpaperBypass.exe` 只给小智壁纸模块打内存补丁，并保持 `XZDesktopWnd` 完整可见。
 2. `WDD-SpannedVirtualDesktops.ps1` 由 WinDynamicDesktop 在图片更新后调用，生成跨区合成图并同步全部 Windows 虚拟桌面。
 
-虚拟桌面切换本身不再触发任何 watcher 动作。
+虚拟桌面切换本身不再触发 watcher 调用 WDD。watcher 监视 WDD 脚本在成功应用跨区图后写出的 `state.json`，同时读取 Windows 当前虚拟桌面 ID；首次注入、状态标记变化或虚拟桌面切换时，它将 `state.json.output` 指向的完整合成图直接载入小智的 DuiLib 背景控件。
+
+旧版实验代码曾把 `this+0xD61` 当作 repaint gate。4.1.3.8 中该字节实际属于别的对象状态，写零会触发小智“程序出错了”并退出。2.6.2 完全删除这条路径，也不再发送同步 `WM_SETTINGCHANGE`。
 
 ## 小智内存补丁
 
@@ -26,6 +28,22 @@ SHA-256 4CE45DEF7FB9A9C146ABD325493C522F8D2EFC15BD1B5C82BD834CE18A716946
 `31 C0 C3` 返回零值并立即退出。写入前验证进程名、模块名、磁盘 DLL SHA-256、完整入口字节和当前内存状态。混合或未知状态会中止，不做偏移猜测。
 
 补丁只存在于进程内存；小智退出后自然消失，watcher 会在下次启动时重新验证并注入。
+
+## 小智背景刷新
+
+小智 4.1.3.8 自己的 `xzdesktopwnd2::SetWallpaper` 会把 WDD 的 7680x2160 跨区图重新生成成 3840x2160 的单屏 `Wallpaper.jpg`，不能用于双屏刷新。2.6.2 改为调用现有背景控件的 `DuiLib64!CControlUI::SetBkImage`：
+
+```text
+XZDesktopImpl64.dll SHA-256
+23E4D014D79639D5C600D16F93017562421ED537054D7EDB88A1112A9925DB12
+
+DuiLib64.dll SHA-256
+F03187A54BB18CC71369B4A6EB36BCFD6BCD5BA70D7315FB92AA428B64E6515E
+
+CControlUI::SetBkImage RVA 0x6DA70
+```
+
+调用前会验证两个完整磁盘哈希、`SetBkImage` 的 16 字节入口、`XZDesktopWnd` userdata、背景控件指针及其 vtable 是否落在受支持的 `XZDesktopImpl64.dll` 映像内。远程线程先设置空字符串再设置合成图路径，确保虚拟桌面切换后即使缓存文件名不变也会重新加载；线程完成后立即释放远程代码和参数页。
 
 ## WDD 脚本输入
 
@@ -68,8 +86,14 @@ HKCU\Control Panel\Desktop\TileWallpaper = 0
 
 - 命名互斥锁防止 WDD 重叠启动两个合成进程；等待上限 30 秒。
 - 所有异常均记录到 `scripts\WDD-SpannedVirtualDesktops.log`，不向 WDD 返回非零退出码，避免重复弹出脚本错误框。
-- watcher 使用 `--wallpaper-refresh external` 后不扫描 WDD 设置、不清空虚拟桌面键、不调用 `/refresh`。
+- watcher 使用 `--wallpaper-refresh external` 后不扫描 WDD 设置、不清空虚拟桌面键、不调用 `/refresh`；只跟踪 `state.json` 和当前虚拟桌面 ID，并触发一次 200ms 去抖的背景重载。
 - 小智窗口保持可见，窗口 region 为 `none`，鼠标拖拽仍由 4.1.3.8 原生实现。
+
+## 框选性能边界
+
+双 4K 实测中，拖动一个很小的桌面选择框即可让小智 UI 线程占满一个逻辑核心。指令采样显示热点位于 `DuiLib64!CPaintManagerUI::MessageHandler`：每个鼠标移动事件都会清空并通过 GDI+ 重绘完整 `7680x2144` 后备缓冲区，而不是选择框附近的脏矩形。
+
+测试过的逐像素循环批量化、跳过透明清零和 16ms 鼠标消息限流均未降低持续拖动时的单核饱和；限流还会直接降低跟手性，因此没有进入正式补丁。默认 `xz` 模式保留小智原生行为。`hybrid` 模式可让 Explorer 接管分区外的桌面输入，但依赖日志跟踪分区矩形，属于显式性能/兼容性取舍。
 
 ## 本机验证
 

@@ -4,9 +4,9 @@
 
 Runtime wallpaper compatibility tool for **XZ Desktop 4.1.3.8 x64** on Windows 11.
 
-Version **2.6.0** blocks XZ Desktop's wallpaper compatibility layer in memory while keeping the complete native `XZDesktopWnd` visible. Desktop groups, resizing, selection, and dragging remain managed by XZ Desktop.
+Version **2.6.2** blocks XZ Desktop's wallpaper compatibility layer in memory while keeping the complete native `XZDesktopWnd` visible. Desktop groups, resizing, selection, and dragging remain managed by XZ Desktop.
 
-For different themes on two physical monitors, a WinDynamicDesktop post-update script combines WDD's per-display `imagePaths` into one native-resolution virtual-screen image. Windows uses the **Span** layout, and `Set-AllDesktopWallpapers` assigns the composite to every virtual desktop before the user switches. The resident watcher no longer calls WDD `/refresh` on virtual-desktop changes.
+For different themes on two physical monitors, a WinDynamicDesktop post-update script combines WDD's per-display `imagePaths` into one native-resolution virtual-screen image. Windows uses the **Span** layout, and `Set-AllDesktopWallpapers` assigns the composite to every virtual desktop before the user switches. The resident watcher never calls WDD `/refresh`; after startup, a completed WDD update, or a virtual-desktop switch it loads the full composite directly into XZ Desktop's verified DuiLib background control. This avoids XZ 4.1.3.8 collapsing the span into a one-monitor cache.
 
 ## Supported target
 
@@ -17,6 +17,8 @@ For different themes on two physical monitors, a WinDynamicDesktop post-update s
 - WinDynamicDesktop 5.7.0 tested with two different 4K themes
 
 Unknown DLL hashes or entry bytes are rejected.
+
+On dual 4K desktops, native XZ selection can consume one full CPU core because DuiLib clears and repaints the entire 7680x2144 backing surface for every mouse move. The default mode deliberately does not throttle mouse input. `--desktop-mode hybrid` delegates empty-desktop input to Explorer but has more compatibility tradeoffs while resizing XZ groups.
 
 ## Install
 
