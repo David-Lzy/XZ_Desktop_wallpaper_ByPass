@@ -25,7 +25,7 @@ import uuid
 import winreg
 
 
-TOOL_VERSION = "2.5.2"
+TOOL_VERSION = "2.6.0"
 TARGET_EXE = "XZDesktop64.exe"
 WINDYNAMIC_PREFIX = "windynamicdesktop"
 VIRTUAL_DESKTOP_ROOT = (
@@ -34,6 +34,9 @@ VIRTUAL_DESKTOP_ROOT = (
 VIRTUAL_DESKTOPS_ROOT = VIRTUAL_DESKTOP_ROOT + r"\Desktops"
 VIRTUAL_DESKTOP_BACKUP_NAME = "virtual-desktop-wallpapers-backup.json"
 VIRTUAL_DESKTOP_ENFORCE_SECONDS = 2.0
+REFRESH_DEBOUNCE_SECONDS = 0.12
+REFRESH_COOLDOWN_SECONDS = 2.0
+REFRESH_RETRY_SECONDS = 5.0
 
 TH32CS_SNAPPROCESS = 0x00000002
 TH32CS_SNAPMODULE = 0x00000008
@@ -1731,9 +1734,11 @@ def watch(
     requested_pid: int | None,
     as_json: bool,
     desktop_mode: str,
+    wallpaper_refresh: str,
 ) -> int:
-    windynamic = find_windynamicdesktop_executable()
-    settings = windynamic_settings_path(windynamic)
+    manage_wallpaper = wallpaper_refresh == "windynamic"
+    windynamic = find_windynamicdesktop_executable() if manage_wallpaper else None
+    settings = windynamic_settings_path(windynamic) if manage_wallpaper else None
     if as_json:
         print(
             json.dumps(
@@ -1742,6 +1747,7 @@ def watch(
                     "target": TARGET_EXE,
                     "interval": interval,
                     "desktop_mode": desktop_mode,
+                    "wallpaper_refresh": wallpaper_refresh,
                     "windynamicdesktop": str(windynamic) if windynamic else None,
                 }
             )
@@ -1751,7 +1757,9 @@ def watch(
             f"Watching {TARGET_EXE}; Ctrl+C to stop. "
             f"Desktop mode: {desktop_mode}. Installed files are never modified."
         )
-        if windynamic:
+        if not manage_wallpaper:
+            print("Wallpaper refresh: external WDD script (watcher will not call /refresh).")
+        elif windynamic:
             print(f"WinDynamicDesktop: {windynamic}")
         else:
             print("WinDynamicDesktop is not running; current Windows paths will still be mirrored.")
@@ -1766,33 +1774,60 @@ def watch(
     drag_active_until = 0.0
     live_pids_cache: set[int] = set()
     next_process_scan = 0.0
+    next_windynamic_scan = 0.0
     settings_marker = file_mtime(settings)
     desktop_marker = current_virtual_desktop_id()
-    refresh_pending = True
+    watch_started = time.monotonic()
+    pending_refresh_reasons: set[str] = {"startup"} if manage_wallpaper else set()
+    refresh_due = watch_started + 1.0
+    last_refresh_request = watch_started - REFRESH_COOLDOWN_SECONDS
+    refresh_error: str | None = None
     next_inheritance_check = 0.0
     inheritance_error: str | None = None
     try:
         while True:
-            if windynamic is None or not windynamic.is_file():
+            loop_clock = time.monotonic()
+            refresh_happened = False
+            if (
+                manage_wallpaper
+                and
+                (windynamic is None or not windynamic.is_file())
+                and loop_clock >= next_windynamic_scan
+            ):
                 windynamic = find_windynamicdesktop_executable()
                 settings = windynamic_settings_path(windynamic)
                 settings_marker = file_mtime(settings)
+                next_windynamic_scan = loop_clock + 2.0
                 if windynamic is not None:
-                    refresh_pending = True
+                    pending_refresh_reasons.add("windynamicdesktop_started")
+                    refresh_due = max(
+                        time.monotonic() + 1.0,
+                        last_refresh_request + REFRESH_COOLDOWN_SECONDS,
+                    )
 
-            new_settings_marker = file_mtime(settings)
-            new_desktop_marker = current_virtual_desktop_id()
-            refresh_reasons: list[str] = []
-            if refresh_pending:
-                refresh_reasons.append("startup")
-            if new_settings_marker != settings_marker:
-                refresh_reasons.append("theme_settings_changed")
-            if new_desktop_marker != desktop_marker:
-                refresh_reasons.append("virtual_desktop_changed")
+            new_settings_marker = file_mtime(settings) if manage_wallpaper else settings_marker
+            new_desktop_marker = (
+                current_virtual_desktop_id() if manage_wallpaper else desktop_marker
+            )
+            event_now = time.monotonic()
+            if manage_wallpaper and new_settings_marker != settings_marker:
+                pending_refresh_reasons.add("theme_settings_changed")
+                settings_marker = new_settings_marker
+                refresh_due = max(
+                    event_now + REFRESH_DEBOUNCE_SECONDS,
+                    last_refresh_request + REFRESH_COOLDOWN_SECONDS,
+                )
+            if manage_wallpaper and new_desktop_marker != desktop_marker:
+                pending_refresh_reasons.add("virtual_desktop_changed")
+                desktop_marker = new_desktop_marker
+                refresh_due = max(
+                    event_now + REFRESH_DEBOUNCE_SECONDS,
+                    last_refresh_request + REFRESH_COOLDOWN_SECONDS,
+                )
 
             inheritance_state: dict | None = None
             inheritance_now = time.monotonic()
-            if refresh_reasons or inheritance_now >= next_inheritance_check:
+            if manage_wallpaper and inheritance_now >= next_inheritance_check:
                 try:
                     inheritance_state = clear_virtual_desktop_wallpapers()
                     if inheritance_state["changed"] and not as_json:
@@ -1809,25 +1844,58 @@ def watch(
                 next_inheritance_check = (
                     inheritance_now + VIRTUAL_DESKTOP_ENFORCE_SECONDS
                 )
-            if refresh_reasons:
-                refresh_state = refresh_windynamicdesktop(windynamic)
-                settings_marker = file_mtime(settings)
-                desktop_marker = current_virtual_desktop_id()
-                refresh_pending = False
-                event = {
-                    "state": "wallpaper_refresh",
-                    "reason": refresh_reasons,
-                    "windynamicdesktop": refresh_state,
-                    "virtual_desktop": desktop_marker,
-                    "virtual_desktop_inheritance": inheritance_state,
-                }
-                if as_json:
-                    print(json.dumps(event, ensure_ascii=False))
-                else:
-                    print(
-                        f"Wallpaper refresh ({', '.join(refresh_reasons)}): "
-                        f"{refresh_state}"
-                    )
+            if (
+                manage_wallpaper
+                and pending_refresh_reasons
+                and time.monotonic() >= refresh_due
+            ):
+                refresh_reasons = sorted(pending_refresh_reasons)
+                try:
+                    refresh_state = refresh_windynamicdesktop(windynamic)
+                    if refresh_state == "not_running":
+                        raise BypassError("WinDynamicDesktop is not running")
+                    last_refresh_request = time.monotonic()
+                    pending_refresh_reasons.clear()
+                    refresh_error = None
+                    refresh_happened = True
+                    event = {
+                        "state": "wallpaper_refresh",
+                        "reason": refresh_reasons,
+                        "windynamicdesktop": refresh_state,
+                        "virtual_desktop": desktop_marker,
+                        "virtual_desktop_inheritance": inheritance_state,
+                    }
+                    if as_json:
+                        print(json.dumps(event, ensure_ascii=False))
+                    else:
+                        print(
+                            f"Wallpaper refresh ({', '.join(refresh_reasons)}): "
+                            f"{refresh_state}"
+                        )
+                except (BypassError, OSError, subprocess.SubprocessError) as exc:
+                    last_refresh_request = time.monotonic()
+                    refresh_due = last_refresh_request + REFRESH_RETRY_SECONDS
+                    message = str(exc)
+                    if message != refresh_error:
+                        if as_json:
+                            print(
+                                json.dumps(
+                                    {
+                                        "state": "wallpaper_refresh_error",
+                                        "reason": refresh_reasons,
+                                        "error": message,
+                                        "retry_seconds": REFRESH_RETRY_SECONDS,
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
+                        else:
+                            print(
+                                f"Wallpaper refresh waiting/error: {message}; "
+                                f"retrying in {REFRESH_RETRY_SECONDS:.0f}s",
+                                file=sys.stderr,
+                            )
+                    refresh_error = message
 
             monitors: list[dict] | None = None
             signature: tuple | None = None
@@ -1889,7 +1957,7 @@ def watch(
                         raise monitor_error
 
                     source = area_sources.get(pid)
-                    layer_refresh = full_check or bool(refresh_reasons)
+                    layer_refresh = full_check or refresh_happened
                     if desktop_mode == "hybrid":
                         if source is None:
                             layer_refresh = True
@@ -1952,7 +2020,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Runtime-only wallpaper compatibility fix for "
             "XiaoZhi Desktop 4.1.3.8 x64, including WinDynamicDesktop "
-            "refresh on virtual-desktop switches. "
+            "integration for virtual desktops. "
             "It does not modify any installed file."
         ),
     )
@@ -1991,6 +2059,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="xz",
         help="continuously enforce native XiaoZhi, hybrid, or system desktop handling",
     )
+    watch_parser.add_argument(
+        "--wallpaper-refresh",
+        choices=("windynamic", "external"),
+        default="windynamic",
+        help=(
+            "windynamic calls /refresh on virtual-desktop changes; external leaves "
+            "wallpaper state to an installed WDD script"
+        ),
+    )
     return parser
 
 
@@ -2011,7 +2088,13 @@ def main() -> int:
         if args.command == "watch":
             if args.interval < 0.05:
                 raise BypassError("--interval must be at least 0.05 seconds")
-            return watch(args.interval, args.pid, args.json, args.desktop_mode)
+            return watch(
+                args.interval,
+                args.pid,
+                args.json,
+                args.desktop_mode,
+                args.wallpaper_refresh,
+            )
         return process_once(
             args.command,
             args.pid,

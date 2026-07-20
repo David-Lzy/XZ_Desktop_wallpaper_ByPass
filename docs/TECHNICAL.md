@@ -1,15 +1,15 @@
 # 实现原理与安全边界
 
-## 目标
+## 组件关系
 
-本项目解决两个相互关联的问题：
+2.6.0 把“阻止小智写壁纸”和“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
 
-1. 小智桌面的壁纸兼容代码会覆盖 Windows/WinDynamicDesktop 管理的壁纸。
-2. Windows 为虚拟桌面保存单张壁纸覆盖，与“双屏分别使用不同图片”的配置冲突，切换时会产生短暂错误画面。
+1. `XZWallpaperBypass.exe` 只给小智壁纸模块打内存补丁，并保持 `XZDesktopWnd` 完整可见。
+2. `WDD-SpannedVirtualDesktops.ps1` 由 WinDynamicDesktop 在图片更新后调用，生成跨区合成图并同步全部 Windows 虚拟桌面。
 
-默认实现不隐藏、裁剪或替换 `XZDesktopWnd`。小智 4.1.3.8 继续负责桌面分区与全部鼠标交互；Windows/WinDynamicDesktop 负责壁纸路径。
+虚拟桌面切换本身不再触发任何 watcher 动作。
 
-## 内存补丁
+## 小智内存补丁
 
 目标模块：
 
@@ -18,94 +18,68 @@ XZWallpaperCore64.dll
 SHA-256 4CE45DEF7FB9A9C146ABD325493C522F8D2EFC15BD1B5C82BD834CE18A716946
 ```
 
-工具只处理以下入口：
-
 | 功能 | RVA | 补丁 |
 | --- | ---: | --- |
 | `XZ_SetWallpaper` | `0x3270` | `31 C0 C3` |
 | `XZ_SetWallpaperThread` | `0x40A0` | `31 C0 C3` |
 
-`31 C0 C3` 等价于返回成功/零值并立即退出。写入前会同时验证：
+`31 C0 C3` 返回零值并立即退出。写入前验证进程名、模块名、磁盘 DLL SHA-256、完整入口字节和当前内存状态。混合或未知状态会中止，不做偏移猜测。
 
-- 目标进程名；
-- 目标模块名；
-- 磁盘 DLL 的完整 SHA-256；
-- 每个入口的原始机器码；
-- 当前内存必须处于完整原始状态或本工具的完整补丁状态。
+补丁只存在于进程内存；小智退出后自然消失，watcher 会在下次启动时重新验证并注入。
 
-任何混合或未知状态都会中止，不做猜测式偏移扫描。
+## WDD 脚本输入
 
-补丁只存在于进程内存。关闭小智进程会自然清除；`restore` 会在进程仍运行时写回原始字节。
+WDD 官方脚本接口在壁纸更新后通过标准输入传入 JSON，其中 `imagePaths` 是各显示器当前图片，最后一项可包含锁屏图片。WDD 自身按显示器索引调用 `IDesktopWallpaper::SetWallpaper`，脚本保留相同枚举顺序，将前 N 项映射到 N 个活动显示器。
 
-## 虚拟桌面继承
+参考：
 
-Windows 虚拟桌面记录位于当前用户注册表：
+- [WDD-scripts README](https://github.com/t1m0thyj/WDD-scripts#readme)
+- [Installing scripts](https://github.com/t1m0thyj/WinDynamicDesktop/wiki/Installing-scripts)
 
-```text
-HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops\Desktops\{GUID}
-```
+## 合成算法
 
-当子键包含 `Wallpaper` 时，切换到该桌面会把这张单图应用到壁纸系统。对于左右屏不同图片的配置，这会暂时把同一张图应用到两屏。
+PowerShell 的 `Screen.AllScreens` 会受 DPI 虚拟化影响，而且它的枚举顺序不一定与 WDD 相同。脚本改为直接调用 WDD 同样使用的 `IDesktopWallpaper::GetMonitorDevicePathAt(index)` 和 `GetMonitorRECT`。因此图片索引与显示器位置来自同一套 API；两块 4K 显示器在 150% 缩放时仍得到物理坐标 `3840x2160`，而不是逻辑坐标 `2560x1440`。
 
-2.5.2 在首次修改前备份每个桌面是否存在 `Wallpaper`、原路径和注册表类型，然后删除这些值。没有单桌面覆盖时，所有虚拟桌面优先继承当前 `IDesktopWallpaper` 的逐显示器路径。
+对每块屏幕：
 
-Windows Shell 还会在内存中保留各虚拟桌面的壁纸状态；WinDynamicDesktop 定时更新通常只更新当前桌面。因此，仅删除注册表值仍可能在稍后的切换中恢复旧图。2.5.2 每两秒检查新建或重新写入的覆盖，并以 50ms 间隔检测虚拟桌面切换；检测后立即调用 WinDynamicDesktop `/refresh`。
+1. 按 `max(目标宽/原图宽, 目标高/原图高)` 计算居中 Fill 比例；
+2. 从源图中心裁剪到目标纵横比；
+3. 以显示器物理 `Bounds` 放入整个虚拟屏幕画布；
+4. 以 JPEG 95 保存到内容签名路径。
 
-## 实测切换时序
+输入路径、文件时间、大小或显示布局改变时签名会变化；相同输入复用缓存。临时文件完成后才原子重命名，最多保留最近 8 张合成图。
 
-修复前，在“左 Big Sur、右 Catalina”的双屏配置下自动切换虚拟桌面，高频读取 `IDesktopWallpaper` 得到：
+## Windows 跨区与虚拟桌面
 
-| 切换后时间 | 左屏 | 右屏 |
-| ---: | --- | --- |
-| 约 620 ms | Big Sur | Big Sur |
-| 约 650 ms | Big Sur | Big Sur |
-| 约 962 ms | Big Sur | Catalina |
-
-单独清除虚拟桌面 `Wallpaper` 覆盖后，短期测试中两个显示器路径没有变化；但 WinDynamicDesktop 在当前桌面进入新的时段图片后，其他桌面的 Shell 内存缓存仍会过期。
-
-2.5.2 在相同双屏配置下再次测试：切换动画完成后约 527ms 读到旧缓存，两屏在约 556ms 都成为旧 `Big_Sur_2`，约 585ms 恢复为当前 `Big_Sur_6` / `Catalina_7`。错误路径实际持续约 58ms；切回原桌面时没有发生路径变化。
-
-## 常驻监视器
-
-`watch --interval 0.05 --desktop-mode xz` 执行以下工作：
-
-- 每 50ms 检查虚拟桌面标记；小智进程枚举仍限制为每秒一次；
-- 小智重启或 DLL 重新加载后再次执行全部校验和内存补丁；
-- 每 30 秒重新验证补丁状态；
-- 每两秒确保虚拟桌面继续继承逐显示器配置；
-- WinDynamicDesktop 启动或主题设置文件变化时请求刷新；
-- 普通虚拟桌面切换触发 WinDynamicDesktop `/refresh`，但没有额外的固定等待。
-
-## 桌面窗口策略
-
-默认 `xz` 模式：
-
-- `XZDesktopWnd` 保持可见；
-- 窗口 region 为 `none`；
-- 不隐藏右侧整理分区；
-- 不接管鼠标拖拽；
-- 不使用旧版按区域裁剪的 Hybrid 绕行方案。
-
-源码中仍保留 `hybrid` 和 `system` 参数，主要用于诊断和回滚旧部署；登录任务只使用 `xz`。
-
-## 回滚数据
-
-备份文件：
+脚本设置：
 
 ```text
-%LOCALAPPDATA%\XZWallpaperBypass\virtual-desktop-wallpapers-backup.json
+HKCU\Control Panel\Desktop\WallpaperStyle = 22
+HKCU\Control Panel\Desktop\TileWallpaper = 0
 ```
 
-备份采用增量保护：监视器首次看到新虚拟桌面时，会先保存其当前状态，再清除覆盖。恢复时只处理仍存在的桌面键，不会重新创建已被用户删除的虚拟桌面。
+随后调用 `VirtualDesktop` 模块的 `Set-AllDesktopWallpapers`，把同一合成图路径写入所有有效虚拟桌面，并用 `SystemParametersInfo(SPI_SETDESKWALLPAPER)` 立即应用当前桌面。
+
+这把原来的二维状态“虚拟桌面 × 物理显示器”降为每个虚拟桌面都支持的一条合成图路径。切换虚拟桌面时 Shell 无需恢复两条逐屏路径，也不需要 WDD `/refresh` 补救。
+
+`VirtualDesktop` 使用非公开 Windows 接口，Windows 大版本更新后可能需要升级模块。脚本首次运行会从 PowerShell Gallery 为当前用户安装该模块，失败会写入 WDD 脚本日志而不会让 WDD 退出。
+
+## 并发和失败边界
+
+- 命名互斥锁防止 WDD 重叠启动两个合成进程；等待上限 30 秒。
+- 所有异常均记录到 `scripts\WDD-SpannedVirtualDesktops.log`，不向 WDD 返回非零退出码，避免重复弹出脚本错误框。
+- watcher 使用 `--wallpaper-refresh external` 后不扫描 WDD 设置、不清空虚拟桌面键、不调用 `/refresh`。
+- 小智窗口保持可见，窗口 region 为 `none`，鼠标拖拽仍由 4.1.3.8 原生实现。
+
+## 本机验证
+
+环境：Windows 11 build 26200、WinDynamicDesktop 5.7.0 Portable、小智 4.1.3.8、双 4K 横向排列、150% 缩放，左 Big Sur、右 Catalina。
+
+- 合成图尺寸：`7680x2160`。
+- 9 个有效虚拟桌面全部写入同一合成图路径。
+- 连续切换 9 个桌面并在 `Switch-Desktop` 返回后立即读取目标桌面：9/9 路径正确，单次 27–153 ms。
+- 验证期间 WDD 错误日志时间未变化，WDD 与 watcher 均保持运行。
 
 ## 版本更新流程
 
-升级小智后应先停止监视器并运行恢复脚本。新版本支持必须重新完成：
-
-1. 计算目标 DLL SHA-256；
-2. 确认目标函数语义；
-3. 记录并校验完整入口字节；
-4. 在双屏、虚拟桌面切换和小智进程重启场景验证；
-5. 更新版本说明与二进制。
-
-不要仅根据旧 RVA 对未知 DLL 强制打补丁。
+升级小智后必须重新计算 DLL 哈希、确认目标函数语义和入口字节，并在小智重启、WDD 换图、显示器布局变化及虚拟桌面切换场景复测。不要对未知 DLL 强制沿用旧 RVA。

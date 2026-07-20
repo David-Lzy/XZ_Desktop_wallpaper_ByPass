@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.6.0 - 2026-07-20
+
+- 用 WDD PowerShell 脚本把每块显示器的当前图片按物理像素合成为一张跨区壁纸。
+- 通过 `VirtualDesktop` 的 `Set-AllDesktopWallpapers` 在换图时主动更新全部虚拟桌面，切屏后不再补调 WDD `/refresh`。
+- 直接使用 WDD 同源的 `IDesktopWallpaper` 索引和物理 `RECT`；双 4K、150% 缩放仍生成原生 `7680x2160` 合成图，并避免左右枚举顺序猜测。
+- watcher 新增 `--wallpaper-refresh external`，该模式不调用 WDD、不清除虚拟桌面壁纸值。
+- 新增互斥锁、内容签名缓存、原子写入、错误日志和自动安装 `VirtualDesktop` 模块。
+- 新增 `install-wdd-span.ps1` 和完整安装文档。
+- 在 9 个有效虚拟桌面间连续切换，9/9 在切换返回时已指向正确合成图；WDD 错误日志无新增。
+
+## 2.5.3 - 2026-07-20
+
+- 修复 2.5.2 连续切屏时重叠 `/refresh` 可能导致 WinDynamicDesktop 5.7.0 `EventScheduler.Run` 崩溃的问题。
+- 增加 120ms 防抖和 2 秒刷新冷却，连续切屏只处理最后状态。
+- 增加 5 秒失败退避；WinDynamicDesktop 暂时退出或刷新失败时 watcher 不再退出。
+- 压力测试以 250ms 间隔连续切换四次，WinDynamicDesktop 与 watcher 均保持运行且日志没有新增异常。
+
 ## 2.5.2 - 2026-07-20
 
 - 修复 WinDynamicDesktop 只更新当前虚拟桌面后，切到其他桌面会长期恢复旧壁纸的问题。

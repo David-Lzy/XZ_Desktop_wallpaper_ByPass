@@ -4,49 +4,47 @@
 
 Runtime wallpaper compatibility tool for **XZ Desktop 4.1.3.8 x64** on Windows 11.
 
-Version 2.5.2 blocks XZ Desktop's wallpaper compatibility layer in memory while keeping the complete native `XZDesktopWnd` visible. Desktop groups, resizing, selection and dragging therefore remain managed by the current XZ Desktop release.
+Version **2.6.0** blocks XZ Desktop's wallpaper compatibility layer in memory while keeping the complete native `XZDesktopWnd` visible. Desktop groups, resizing, selection, and dragging remain managed by XZ Desktop.
 
-It also removes the single-picture overrides stored for individual Windows virtual desktops. Because Windows can still restore an in-memory wallpaper cache when switching desktops, version 2.5.2 detects switches every 50 ms and immediately requests a WinDynamicDesktop refresh. In the validated dual-monitor setup, the stale cache remained visible for about 58 ms instead of persisting until a manual refresh.
+For different themes on two physical monitors, a WinDynamicDesktop post-update script combines WDD's per-display `imagePaths` into one native-resolution virtual-screen image. Windows uses the **Span** layout, and `Set-AllDesktopWallpapers` assigns the composite to every virtual desktop before the user switches. The resident watcher no longer calls WDD `/refresh` on virtual-desktop changes.
 
 ## Supported target
 
-- Process: `XZDesktop64.exe`
-- Module: `XZWallpaperCore64.dll`
-- SHA-256: `4CE45DEF7FB9A9C146ABD325493C522F8D2EFC15BD1B5C82BD834CE18A716946`
-- Tested XZ Desktop version: 4.1.3.8 x64
-- Tested OS: Windows 11 x64
+- Windows 11 x64
+- XZ Desktop 4.1.3.8 x64
+- `XZWallpaperCore64.dll`
+- SHA-256 `4CE45DEF7FB9A9C146ABD325493C522F8D2EFC15BD1B5C82BD834CE18A716946`
+- WinDynamicDesktop 5.7.0 tested with two different 4K themes
 
-The tool refuses to patch an unknown module hash or unexpected entry bytes.
+Unknown DLL hashes or entry bytes are rejected.
 
 ## Install
 
-Open PowerShell in the repository directory:
+Enable **More Options -> Enable PowerShell scripts** in WDD, then run:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\dist\XZWallpaperBypass.exe status
-.\register-startup-task.ps1
+./dist/XZWallpaperBypass.exe status
+./install-wdd-span.ps1
+./register-startup-task.ps1
 ```
 
-The installer registers and immediately starts the per-user task `XZWallpaperBypass-WallpaperOnly`.
+If WDD is not running, pass its directory explicitly:
+
+```powershell
+./install-wdd-span.ps1 -WddDirectory 'D:/Apps/WinDynamicDesktop'
+```
+
+The WDD script installs the `VirtualDesktop` PowerShell module for the current user on first use. The startup task runs:
+
+```text
+XZWallpaperBypass.exe watch --interval 0.25 --desktop-mode xz --wallpaper-refresh external
+```
+
+Generated composites and state are under `%LOCALAPPDATA%/XZWallpaperBypass/WDD-Span`.
 
 ## Restore
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\Restore-XiaoZhi.ps1
-```
+Remove `WDD-SpannedVirtualDesktops.ps1` from WDD's `scripts` directory, run `Restore-XiaoZhi.ps1`, and refresh WDD once.
 
-This stops the watcher, restores the original in-memory bytes and virtual-desktop wallpaper records, and removes the scheduled task.
-
-## Build
-
-Use a 64-bit Python 3.11+ installation:
-
-```powershell
-.\build.ps1 -Python python
-```
-
-The isolated build dependency is stored under `.build-tools`; the executable is written to `dist\XZWallpaperBypass.exe`.
-
-See [the Chinese README](README.md) and [technical documentation](docs/TECHNICAL.md) for compatibility details, validation evidence and troubleshooting.
+See the [Chinese README](README.md), [technical documentation](docs/TECHNICAL.md), and [changelog](CHANGELOG.md) for implementation details and validation evidence.
