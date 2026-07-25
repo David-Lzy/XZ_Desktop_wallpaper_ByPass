@@ -123,6 +123,12 @@ Install-Module VirtualDesktop -Scope CurrentUser -Force
 
 这是 4.1.3.8 原生 `XZDesktopWnd` 的 GDI+ 绘制路径：即使选择框很小，每个鼠标移动事件仍会处理完整的 7680x2144 后备缓冲区。2.6.3 只屏蔽虚拟桌面切换后的整屏重绘，不降低鼠标消息频率，也不保留会让框选更迟钝的限帧补丁。常驻任务默认使用 `hybrid`，让 Explorer 接管分区外桌面；若更看重小智全屏原生框选，可手动改回 `--desktop-mode xz`，但双 4K、150% 缩放下会错误缩放跨区背景。
 
+### StartAllBack 透明任务栏露出最大化窗口边框
+
+这不是小智壁纸或 `hybrid` region 故障。双 4K、150% 缩放实测中，Windows 工作区和任务栏分界为 `Y=2100`，Codex 最大化客户端停在 `Y=2099`，但 DWM 外框延伸到 `Y=2111`。当 StartAllBack 使用 `TaskbarAlpha=0`、`TaskbarBlur=0` 的完全透明任务栏时，顶部约 9–10 像素会露出后面的窗口外框；内容本身没有被任务栏遮挡。
+
+应在 StartAllBack 中提高任务栏不透明度或启用模糊，而不是修改显示器坐标或 XZWallpaperBypass。显示器 `Y` 坐标不一致属于另一个问题，应先在 Windows 显示布局中对齐。
+
 ### 左右图片顺序错误
 
 脚本使用 WDD 同源的 `IDesktopWallpaper` 显示器索引和物理 `RECT`，不依赖 .NET 的屏幕枚举顺序。显卡驱动更新后可先在 Windows“显示设置”中重新识别显示器，再在 WDD 中重新选择每屏主题并刷新一次。

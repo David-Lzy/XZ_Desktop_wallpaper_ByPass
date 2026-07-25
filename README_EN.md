@@ -53,6 +53,10 @@ Generated composites and state are under `%LOCALAPPDATA%/XZWallpaperBypass/WDD-S
 
 `status` should report version `2.6.4`, process state `patched`, `Block virtual-desktop full redraw: patched`, and desktop layer `visible_hybrid`.
 
+## Transparent StartAllBack taskbar
+
+This is separate from XZ Desktop wallpaper handling. On the tested dual-4K system at 150% scaling, the Windows work area and taskbar meet at `Y=2100`; the maximized Codex client ends at `Y=2099`, while its DWM frame extends to `Y=2111`. With StartAllBack set to `TaskbarAlpha=0` and `TaskbarBlur=0`, the transparent top 9–10 pixels expose that frame. No application content is covered. Adjust StartAllBack opacity or blur instead of display coordinates or XZWallpaperBypass.
+
 ## Restore
 
 Remove `WDD-SpannedVirtualDesktops.ps1` from WDD's `scripts` directory, run `Restore-XiaoZhi.ps1`, and refresh WDD once.

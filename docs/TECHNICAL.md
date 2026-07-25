@@ -99,6 +99,12 @@ HKCU\Control Panel\Desktop\TileWallpaper = 0
 - watcher 使用 `--wallpaper-refresh external` 后不扫描 WDD 设置、不清空虚拟桌面键、不调用 `/refresh`；只跟踪 `state.json` 和当前虚拟桌面 ID，并触发一次 200ms 去抖的背景重载。
 - 默认 `hybrid` 模式把小智窗口 region 限制为分区矩形；分区外由 Explorer 显示跨区壁纸并处理桌面输入。
 
+## StartAllBack 透明任务栏边界
+
+双 4K、150% 缩放实测中，两块显示器物理坐标已对齐为 `Y=0..2160`，工作区均为 `Y=0..2100`，两条任务栏均为 60 像素高。最大化 Codex 窗口的 Win32/DWM 外框为 `Y=-11..2111`，客户端为 `Y=-1..2099`；因此客户端停在任务栏上方 1 像素，但外框进入任务栏区域 11 像素。
+
+StartAllBack 3.9.23 配置为 `TaskbarStyle=Windows 7.msstyles`、`TaskbarAlpha=0`、`TaskbarBlur=0` 时，截图逐像素显示任务栏顶部约 9–10 像素透明，后面的 DWM 外框因此可见。该视觉重叠不由 XZWallpaperBypass、WDD 跨区壁纸或 `hybrid` 窗口 region 产生；不应为此改变注入器窗口逻辑。处理点是 StartAllBack 的任务栏不透明度或模糊设置。
+
 ## 框选性能边界
 
 双 4K 实测中，拖动一个很小的桌面选择框即可让小智 UI 线程占满一个逻辑核心。指令采样显示热点位于 `DuiLib64!CPaintManagerUI::MessageHandler`：每个鼠标移动事件都会清空并通过 GDI+ 重绘完整 `7680x2144` 后备缓冲区，而不是选择框附近的脏矩形。
