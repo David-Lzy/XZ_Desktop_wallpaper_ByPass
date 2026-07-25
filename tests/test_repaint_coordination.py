@@ -131,7 +131,7 @@ class StartupCoordinationTests(unittest.TestCase):
         self.assertEqual(result, 0)
         repaint.assert_called_once_with(42)
 
-    def test_watcher_waits_after_desktop_window_becomes_ready(self) -> None:
+    def test_watcher_hides_visible_layer_during_startup_delay(self) -> None:
         original = {
             "pid": 42,
             "state": "original",
@@ -145,19 +145,21 @@ class StartupCoordinationTests(unittest.TestCase):
             patch.object(bypass, "find_processes", return_value=[42]),
             patch.object(bypass, "inspect_pid", return_value=original),
             patch.object(bypass, "change_pid") as change,
+            patch.object(bypass, "set_desktop_layer") as set_layer,
             patch.object(bypass.time, "sleep", side_effect=KeyboardInterrupt),
         ):
             result = bypass.watch(
                 interval=0.25,
                 requested_pid=None,
                 as_json=False,
-                desktop_mode="xz",
+                desktop_mode="hybrid",
                 wallpaper_refresh="external",
                 startup_delay=10.0,
             )
 
         self.assertEqual(result, 0)
         change.assert_not_called()
+        set_layer.assert_called_once_with(42, "system")
 
 
 if __name__ == "__main__":

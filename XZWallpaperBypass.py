@@ -25,7 +25,7 @@ import uuid
 import winreg
 
 
-TOOL_VERSION = "2.6.3"
+TOOL_VERSION = "2.6.4"
 TARGET_EXE = "XZDesktop64.exe"
 WINDYNAMIC_PREFIX = "windynamicdesktop"
 VIRTUAL_DESKTOP_ROOT = (
@@ -2156,6 +2156,11 @@ def watch(
                                     else None
                                 )
                             if wait_reason is not None:
+                                if (
+                                    desktop_mode in ("hybrid", "xz")
+                                    and layer_state not in ("window_not_ready", "hidden_system")
+                                ):
+                                    set_desktop_layer(pid, "system")
                                 marker = f"startup_wait:{layer_state}"
                                 if last_report.get(pid) != marker:
                                     if as_json:
@@ -2291,7 +2296,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--desktop-mode",
         choices=("hybrid", "system", "xz"),
         default="xz",
-        help="xz keeps native XiaoZhi desktop input; hybrid is an optional legacy mode",
+        help="xz keeps full native XiaoZhi input; hybrid limits it to organizer regions",
     )
     subparsers.add_parser("restore", help="restore all original bytes in memory")
     watch_parser = subparsers.add_parser(
@@ -2311,7 +2316,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--desktop-mode",
         choices=("hybrid", "system", "xz"),
         default="xz",
-        help="continuously enforce native XiaoZhi, hybrid, or system desktop handling",
+        help="continuously enforce full XiaoZhi, organizer-only hybrid, or system handling",
     )
     watch_parser.add_argument(
         "--wallpaper-refresh",

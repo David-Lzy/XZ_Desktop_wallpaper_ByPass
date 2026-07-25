@@ -2,19 +2,19 @@
 
 [English](README_EN.md) | 中文
 
-适用于 **小智桌面 4.1.3.8 x64** 的运行时壁纸兼容工具。它阻止小智的壁纸兼容层覆盖 Windows 壁纸，并屏蔽虚拟桌面切换消息触发的高成本全屏重绘，同时保留新版小智原生的桌面分区、图标、宽度调整、框选和拖拽。
+适用于 **小智桌面 4.1.3.8 x64** 的运行时壁纸兼容工具。它阻止小智的壁纸兼容层覆盖 Windows 壁纸，并屏蔽虚拟桌面切换消息触发的高成本全屏重绘；默认 `hybrid` 模式保留小智分区区域，由 Explorer 处理其他桌面输入。
 
-当前版本：**2.6.3**
+当前版本：**2.6.4**
 
 预编译程序的 SHA-256 见 [SHA256SUMS.txt](SHA256SUMS.txt)。
 
 > 本工具会向正在运行的 `XZDesktop64.exe` 写入经过严格校验的内存补丁。它不修改小智安装目录；目标 DLL 哈希或入口字节不匹配时会拒绝写入。
 
-## 2.6.3 的方案
+## 2.6.4 的方案
 
 Windows 11 的每个虚拟桌面只能可靠保存一条壁纸路径，不能可靠持久化“左、右显示器各一张图”。旧方案在切换虚拟桌面后调用 WinDynamicDesktop `/refresh` 补救，既会短暂显示错误壁纸，快速切换时还可能撞上 WDD 的 `EventScheduler` 竞态。
 
-2.6.3 延续跨区壁纸方案，不在切屏后补调 WDD：
+2.6.4 延续跨区壁纸方案，不在切屏后补调 WDD：
 
 1. WDD 每次换图时，把各显示器当前图片通过官方脚本参数 `imagePaths` 交给 [WDD-SpannedVirtualDesktops.ps1](wdd-scripts/WDD-SpannedVirtualDesktops.ps1)。
 2. 脚本从 WDD 同样使用的 `IDesktopWallpaper` API 读取显示器索引和物理坐标，分别做居中填充裁剪，再拼成覆盖整个虚拟屏幕的图片。
@@ -24,7 +24,7 @@ Windows 11 的每个虚拟桌面只能可靠保存一条壁纸路径，不能可
 
 因此两个物理显示器仍可在 WDD 中选择不同主题，而虚拟桌面切换时使用的是已经准备好的同一张跨区图。
 
-这里不能调用小智自己的 `SetWallpaper`：4.1.3.8 会把 7680x2160 合成图重新生成成 3840x2160 单屏缓存。2.6.3 校验 `XZDesktopImpl64.dll` 的对象布局和 `DuiLib64.dll` 的 `SetBkImage` 入口后，直接加载 WDD 合成图。未知哈希或入口字节一律拒绝执行。
+这里不能调用小智自己的 `SetWallpaper`：4.1.3.8 会把 7680x2160 合成图重新生成成 3840x2160 单屏缓存。2.6.4 校验 `XZDesktopImpl64.dll` 的对象布局和 `DuiLib64.dll` 的 `SetBkImage` 入口后，直接加载 WDD 合成图。未知哈希或入口字节一律拒绝执行。
 
 上游资料：[WDD-scripts](https://github.com/t1m0thyj/WDD-scripts#readme)、[Installing scripts](https://github.com/t1m0thyj/WinDynamicDesktop/wiki/Installing-scripts)、[PSVirtualDesktop](https://github.com/MScholtes/PSVirtualDesktop)。
 
@@ -50,6 +50,8 @@ Windows 11 的每个虚拟桌面只能可靠保存一条壁纸路径，不能可
 更多选项 -> 启用 PowerShell 脚本
 ```
 
+若使用 [David-Lzy/WinDynamicDesktop](https://github.com/David-Lzy/WinDynamicDesktop) 分支，可直接开启其 `Sync multi-monitor wallpaper across virtual desktops` 选项，无需安装下面的 WDD 脚本。
+
 然后在仓库目录打开 PowerShell：
 
 ```powershell
@@ -68,10 +70,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 WDD 脚本首次运行会为当前用户自动安装 `VirtualDesktop` PowerShell 模块。登录任务 `XZWallpaperBypass-WallpaperOnly` 使用：
 
 ```text
-XZWallpaperBypass.exe watch --interval 0.25 --desktop-mode xz --wallpaper-refresh external
+XZWallpaperBypass.exe watch --interval 0.25 --desktop-mode hybrid --wallpaper-refresh external
 ```
 
 `external` 表示壁纸完全由 WDD 脚本管理，watcher 不会调用 WDD `/refresh`；它会在启动、`state.json` 更新和虚拟桌面切换后重载一次小智桌面背景。
+
+`hybrid` 只保留小智分区区域，其他位置显示 Windows 跨区壁纸，避免双 4K、150% 缩放时小智把整张合成图压缩到左屏。
 
 ## 验证
 
@@ -82,7 +86,7 @@ Get-Content "$env:LOCALAPPDATA/XZWallpaperBypass/WDD-Span/state.json"
 Get-ScheduledTask -TaskName 'XZWallpaperBypass-WallpaperOnly'
 ```
 
-正常状态应显示版本 `2.6.3`、进程 `patched`、`Block virtual-desktop full redraw: patched`、Desktop layer 为 `visible_xiaozhi`，且 `state.json` 的 `size` 与物理虚拟屏幕一致。双 4K 横向排列时应为 `7680, 2160`。
+正常状态应显示版本 `2.6.4`、进程 `patched`、`Block virtual-desktop full redraw: patched`、Desktop layer 为 `visible_hybrid`，且 `state.json` 的 `output` 指向当前跨区合成图。双 4K 横向排列时该图片应为 `7680x2160`。
 
 合成图片和状态位于 `%LOCALAPPDATA%/XZWallpaperBypass/WDD-Span`；脚本日志位于 WDD 的 `scripts/WDD-SpannedVirtualDesktops.log`。
 
@@ -109,7 +113,7 @@ Install-Module VirtualDesktop -Scope CurrentUser -Force
 
 ### 重启后小智桌面层为纯黑
 
-2.6.3 会在首次注入、WDD 的 `state.json` 更新及虚拟桌面切换后直接重载完整合成图。先确认计划任务运行的是 2.6.3，再检查 `state.json` 的 `output` 文件是否存在。
+2.6.4 会在首次注入、WDD 的 `state.json` 更新及虚拟桌面切换后直接重载完整合成图。先确认计划任务运行的是 2.6.4，再检查 `state.json` 的 `output` 文件是否存在。
 
 ### 切换虚拟桌面后冻结数秒
 
@@ -117,7 +121,7 @@ Install-Module VirtualDesktop -Scope CurrentUser -Force
 
 ### 桌面框选时小智占满一个核心
 
-这是 4.1.3.8 原生 `XZDesktopWnd` 的 GDI+ 绘制路径：即使选择框很小，每个鼠标移动事件仍会处理完整的 7680x2144 后备缓冲区。2.6.3 只屏蔽虚拟桌面切换后的整屏重绘，不降低鼠标消息频率，也不保留会让框选更迟钝的限帧补丁。若更看重 Explorer 的原生框选性能，可手动改用 `--desktop-mode hybrid`；该模式需要依赖小智日志跟踪分区矩形，调整分区时的兼容性不如默认 `xz` 模式。
+这是 4.1.3.8 原生 `XZDesktopWnd` 的 GDI+ 绘制路径：即使选择框很小，每个鼠标移动事件仍会处理完整的 7680x2144 后备缓冲区。2.6.3 只屏蔽虚拟桌面切换后的整屏重绘，不降低鼠标消息频率，也不保留会让框选更迟钝的限帧补丁。常驻任务默认使用 `hybrid`，让 Explorer 接管分区外桌面；若更看重小智全屏原生框选，可手动改回 `--desktop-mode xz`，但双 4K、150% 缩放下会错误缩放跨区背景。
 
 ### 左右图片顺序错误
 

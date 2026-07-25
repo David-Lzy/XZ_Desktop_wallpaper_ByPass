@@ -11,7 +11,7 @@ $existing = Get-CimInstance Win32_Process -Filter "Name='XZWallpaperBypass.exe'"
     Where-Object {
         $_.ExecutablePath -eq $executable -and
         $_.CommandLine -match '\bwatch\b' -and
-        $_.CommandLine -match '--desktop-mode\s+xz' -and
+        $_.CommandLine -match '--desktop-mode\s+hybrid' -and
         $_.CommandLine -match '--wallpaper-refresh\s+external'
     }
 
@@ -24,7 +24,7 @@ $process = Start-Process `
     -ArgumentList @(
         'watch',
         '--interval', '0.25',
-        '--desktop-mode', 'xz',
+        '--desktop-mode', 'hybrid',
         '--wallpaper-refresh', 'external',
         '--startup-delay', '10'
     ) `

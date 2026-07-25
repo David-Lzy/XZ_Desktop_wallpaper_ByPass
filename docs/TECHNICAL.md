@@ -2,10 +2,10 @@
 
 ## 组件关系
 
-2.6.3 把“阻止小智写壁纸和切屏整屏重绘”与“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
+2.6.4 把“阻止小智写壁纸和切屏整屏重绘”与“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
 
-1. `XZWallpaperBypass.exe` 只给小智壁纸模块打内存补丁，并保持 `XZDesktopWnd` 完整可见。
-2. `WDD-SpannedVirtualDesktops.ps1` 由 WinDynamicDesktop 在图片更新后调用，生成跨区合成图并同步全部 Windows 虚拟桌面。
+1. `XZWallpaperBypass.exe` 给小智壁纸模块打内存补丁；默认 `hybrid` 模式只保留 `XZDesktopWnd` 的分区区域。
+2. 配套 WDD 分支的内置同步器或 `WDD-SpannedVirtualDesktops.ps1` 在图片更新后生成跨区合成图，并同步全部 Windows 虚拟桌面。
 
 虚拟桌面切换本身不再触发 watcher 调用 WDD。watcher 监视 WDD 脚本在成功应用跨区图后写出的 `state.json`，同时读取 Windows 当前虚拟桌面 ID；首次注入、状态标记变化或虚拟桌面切换时，它将 `state.json.output` 指向的完整合成图直接载入小智的 DuiLib 背景控件。
 
@@ -97,13 +97,13 @@ HKCU\Control Panel\Desktop\TileWallpaper = 0
 - 命名互斥锁防止 WDD 重叠启动两个合成进程；等待上限 30 秒。
 - 所有异常均记录到 `scripts\WDD-SpannedVirtualDesktops.log`，不向 WDD 返回非零退出码，避免重复弹出脚本错误框。
 - watcher 使用 `--wallpaper-refresh external` 后不扫描 WDD 设置、不清空虚拟桌面键、不调用 `/refresh`；只跟踪 `state.json` 和当前虚拟桌面 ID，并触发一次 200ms 去抖的背景重载。
-- 小智窗口保持可见，窗口 region 为 `none`，鼠标拖拽仍由 4.1.3.8 原生实现。
+- 默认 `hybrid` 模式把小智窗口 region 限制为分区矩形；分区外由 Explorer 显示跨区壁纸并处理桌面输入。
 
 ## 框选性能边界
 
 双 4K 实测中，拖动一个很小的桌面选择框即可让小智 UI 线程占满一个逻辑核心。指令采样显示热点位于 `DuiLib64!CPaintManagerUI::MessageHandler`：每个鼠标移动事件都会清空并通过 GDI+ 重绘完整 `7680x2144` 后备缓冲区，而不是选择框附近的脏矩形。
 
-测试过的逐像素循环批量化、跳过透明清零和 16ms 鼠标消息限流均未降低持续拖动时的单核饱和；限流还会直接降低跟手性，因此没有进入正式补丁。默认 `xz` 模式保留小智原生行为。`hybrid` 模式可让 Explorer 接管分区外的桌面输入，但依赖日志跟踪分区矩形，属于显式性能/兼容性取舍。
+测试过的逐像素循环批量化、跳过透明清零和 16ms 鼠标消息限流均未降低持续拖动时的单核饱和；限流还会直接降低跟手性，因此没有进入正式补丁。默认 `hybrid` 模式让 Explorer 接管分区外的桌面输入，并避免 150% 缩放下错误缩放跨区背景；`xz` 模式可完整保留小智原生行为，但会重新暴露上述背景缩放问题。
 
 ## 本机验证
 
