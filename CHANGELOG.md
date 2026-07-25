@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.3 - 2026-07-25
+
+- 修复双 4K 环境切换 Windows 虚拟桌面后，小智桌面背景和桌面层冻结约 8–12 秒的问题。
+- 定位根因为 `XZDesktopWnd2::HandleCustomMessage` 处理结果 `0x14/0x15` 时调用完整虚拟屏幕重绘；`CheckDesktopStatus` 查询本身和 Explorer 右键扩展均不是瓶颈。
+- 对受支持的 `XZDesktopImpl64.dll` 在 RVA `0x3695A1` 的 5 字节 `CALL` 做严格哈希和原始指令校验后替换为 NOP；不禁用 Windows 虚拟桌面，也不影响 watcher 的按需背景重载。
+- 小智重启后 watcher 会自动重新注入。实测切换阶段小智 CPU 从约 8–12 秒降至 0.39–0.48 秒，临时私有内存增量从约 140–310 MB 降至 0 MB。
+
 ## 2.6.2 - 2026-07-20
 
 - 删除会在小智 4.1.3.8 上破坏对象内存的旧 `this+0xD61` repaint gate 写入；不再发送同步 `WM_SETTINGCHANGE`。

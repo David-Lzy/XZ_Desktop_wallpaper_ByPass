@@ -25,7 +25,7 @@ import uuid
 import winreg
 
 
-TOOL_VERSION = "2.6.2"
+TOOL_VERSION = "2.6.3"
 TARGET_EXE = "XZDesktop64.exe"
 WINDYNAMIC_PREFIX = "windynamicdesktop"
 VIRTUAL_DESKTOP_ROOT = (
@@ -181,21 +181,27 @@ IMPL_PROFILE = ModuleProfile(
     ),
 )
 
-# XiaoZhi 4.1.3.8 retains the two wallpaper-core entry points byte-for-byte,
-# but XZDesktopImpl64.dll was substantially reorganized.  The old internal
-# dual-monitor call-site patch is therefore intentionally excluded.  Windows
-# owns wallpaper rendering in hybrid mode, so that internal patch is no longer
-# needed for the supported 4.1.3.8 workflow.
-PROFILES = (CORE_PROFILE,)
+DESKTOP_SWITCH_PROFILE = ModuleProfile(
+    "XZDesktopImpl64.dll",
+    "23E4D014D79639D5C600D16F93017562421ED537054D7EDB88A1112A9925DB12",
+    (
+        PatchSite(
+            "Block virtual-desktop full redraw",
+            0x3695A1,
+            bytes.fromhex("E8 1A 39 01 00"),
+            b"\x90" * 5,
+        ),
+    ),
+)
+
+PROFILES = (CORE_PROFILE, DESKTOP_SWITCH_PROFILE)
 PER_MONITOR_SYNC_ENABLED = False
 
 # XiaoZhi 4.1.3.8 background-control layout.  Its own SetWallpaper routine
 # collapses a 7680x2160 WDD span into a 3840x2160 cache, so the watcher instead
 # gives the verified DuiLib background control the already composed span image.
 # Complete DLL hashes and remote entry bytes are checked before any call.
-IMPL_4138_SHA256 = (
-    "23E4D014D79639D5C600D16F93017562421ED537054D7EDB88A1112A9925DB12"
-)
+IMPL_4138_SHA256 = DESKTOP_SWITCH_PROFILE.sha256
 DUI_4138_SHA256 = (
     "F03187A54BB18CC71369B4A6EB36BCFD6BCD5BA70D7315FB92AA428B64E6515E"
 )

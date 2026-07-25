@@ -8,6 +8,13 @@ import XZWallpaperBypass as bypass
 
 
 class StartupCoordinationTests(unittest.TestCase):
+    def test_virtual_desktop_patch_blocks_only_the_full_redraw_call(self) -> None:
+        site = bypass.DESKTOP_SWITCH_PROFILE.sites[0]
+        displacement = int.from_bytes(site.original[1:], "little", signed=True)
+
+        self.assertEqual(site.rva + len(site.original) + displacement, 0x37CEC0)
+        self.assertEqual(site.patch, b"\x90" * 5)
+
     def test_fresh_patch_does_not_send_unsafe_repaint_message(self) -> None:
         inspected = {
             "pid": 42,

@@ -2,14 +2,14 @@
 
 ## 组件关系
 
-2.6.2 把“阻止小智写壁纸”和“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
+2.6.3 把“阻止小智写壁纸和切屏整屏重绘”与“让 WDD 管理双屏动态壁纸”拆成两个独立部分：
 
 1. `XZWallpaperBypass.exe` 只给小智壁纸模块打内存补丁，并保持 `XZDesktopWnd` 完整可见。
 2. `WDD-SpannedVirtualDesktops.ps1` 由 WinDynamicDesktop 在图片更新后调用，生成跨区合成图并同步全部 Windows 虚拟桌面。
 
 虚拟桌面切换本身不再触发 watcher 调用 WDD。watcher 监视 WDD 脚本在成功应用跨区图后写出的 `state.json`，同时读取 Windows 当前虚拟桌面 ID；首次注入、状态标记变化或虚拟桌面切换时，它将 `state.json.output` 指向的完整合成图直接载入小智的 DuiLib 背景控件。
 
-旧版实验代码曾把 `this+0xD61` 当作 repaint gate。4.1.3.8 中该字节实际属于别的对象状态，写零会触发小智“程序出错了”并退出。2.6.2 完全删除这条路径，也不再发送同步 `WM_SETTINGCHANGE`。
+旧版实验代码曾把 `this+0xD61` 当作 repaint gate。4.1.3.8 中该字节实际属于别的对象状态，写零会触发小智“程序出错了”并退出。2.6.3 不使用这条路径，也不发送同步 `WM_SETTINGCHANGE`。
 
 ## 小智内存补丁
 
@@ -18,20 +18,30 @@
 ```text
 XZWallpaperCore64.dll
 SHA-256 4CE45DEF7FB9A9C146ABD325493C522F8D2EFC15BD1B5C82BD834CE18A716946
+
+XZDesktopImpl64.dll
+SHA-256 23E4D014D79639D5C600D16F93017562421ED537054D7EDB88A1112A9925DB12
 ```
 
-| 功能 | RVA | 补丁 |
-| --- | ---: | --- |
-| `XZ_SetWallpaper` | `0x3270` | `31 C0 C3` |
-| `XZ_SetWallpaperThread` | `0x40A0` | `31 C0 C3` |
+| 模块 | 功能 | RVA | 原始字节 | 补丁 |
+| --- | --- | ---: | --- | --- |
+| `XZWallpaperCore64.dll` | `XZ_SetWallpaper` | `0x3270` | 完整函数入口 | `31 C0 C3` |
+| `XZWallpaperCore64.dll` | `XZ_SetWallpaperThread` | `0x40A0` | 完整函数入口 | `31 C0 C3` |
+| `XZDesktopImpl64.dll` | 虚拟桌面切换后的完整重绘调用 | `0x3695A1` | `E8 1A 39 01 00` | `90 90 90 90 90` |
 
 `31 C0 C3` 返回零值并立即退出。写入前验证进程名、模块名、磁盘 DLL SHA-256、完整入口字节和当前内存状态。混合或未知状态会中止，不做偏移猜测。
 
 补丁只存在于进程内存；小智退出后自然消失，watcher 会在下次启动时重新验证并注入。
 
+### 虚拟桌面切换重绘
+
+切换 Windows 虚拟桌面时，小智并未死锁；`XZDesktop64.exe` 的 UI 线程持续占用一个逻辑核心，并临时分配约 140–310 MB。调用栈落在 `XZDesktopWnd2::HandleCustomMessage`：解析结果为 `0x14/0x15` 后，RVA `0x3695A1` 调用包装器 `0x37CEC0`，最终进入完整虚拟屏幕的 DuiLib/GDI 重绘。
+
+将 `CheckDesktopStatus` 固定返回 false、隐藏桌面层或停用 Explorer 右键扩展均不能消除 CPU 峰值。2.6.3 因此只把上述 5 字节调用替换为 NOP，不修改共享包装器，也不屏蔽 Windows 虚拟桌面 API。watcher 仍可在 `state.json` 更新或桌面切换后调用经过校验的 `SetBkImage` 重载背景。
+
 ## 小智背景刷新
 
-小智 4.1.3.8 自己的 `xzdesktopwnd2::SetWallpaper` 会把 WDD 的 7680x2160 跨区图重新生成成 3840x2160 的单屏 `Wallpaper.jpg`，不能用于双屏刷新。2.6.2 改为调用现有背景控件的 `DuiLib64!CControlUI::SetBkImage`：
+小智 4.1.3.8 自己的 `xzdesktopwnd2::SetWallpaper` 会把 WDD 的 7680x2160 跨区图重新生成成 3840x2160 的单屏 `Wallpaper.jpg`，不能用于双屏刷新。2.6.3 调用现有背景控件的 `DuiLib64!CControlUI::SetBkImage`：
 
 ```text
 XZDesktopImpl64.dll SHA-256
@@ -103,6 +113,8 @@ HKCU\Control Panel\Desktop\TileWallpaper = 0
 - 9 个有效虚拟桌面全部写入同一合成图路径。
 - 连续切换 9 个桌面并在 `Switch-Desktop` 返回后立即读取目标桌面：9/9 路径正确，单次 27–153 ms。
 - 验证期间 WDD 错误日志时间未变化，WDD 与 watcher 均保持运行。
+- 未屏蔽整屏重绘时，小智每个切换阶段消耗约 8–12 CPU 秒并临时增加约 140–310 MB 私有内存。
+- 应用 RVA `0x3695A1` 补丁并由 watcher 常驻后，两次往返切换分别消耗 0.39 和 0.48 CPU 秒，私有内存增量均为 0 MB；小智、Explorer 和 DWM 始终可响应。
 
 ## 版本更新流程
 
