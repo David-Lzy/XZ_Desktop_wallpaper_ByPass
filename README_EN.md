@@ -49,6 +49,10 @@ XZWallpaperBypass.exe watch --interval 0.25 --desktop-mode hybrid --wallpaper-re
 
 `hybrid` keeps the XiaoZhi organizer regions visible while exposing the Windows spanned wallpaper elsewhere. This avoids scaling the full 7680-pixel composite into the left display at 150% display scaling.
 
+The startup script supervises XiaoZhi and the watcher in the current session. It attempts to restart XiaoZhi from the installation directory in the current user's registry and restarts a missing watcher. If the launcher cannot be found, the watcher still runs but XiaoZhi cannot be restarted automatically. Even an intentional XiaoZhi exit is restarted; disable and stop the scheduled task first to stop recovery.
+
+XiaoZhi stores organizer positions itself. Hybrid mode follows those positions rather than pinning them to a display; after a display layout change, unlock and move the organizers to the intended display, then lock them again.
+
 Generated composites and state are under `%LOCALAPPDATA%/XZWallpaperBypass/WDD-Span`.
 
 `status` should report version `2.6.4`, process state `patched`, `Block virtual-desktop full redraw: patched`, and desktop layer `visible_hybrid`.
